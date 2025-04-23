@@ -319,6 +319,7 @@ fn test_aliases_are_resolved(shell: Shell) {
 
     // user config alias
     test_env.add_config(r#"aliases.b = ["bookmark"]"#);
+    test_env.add_config(r#"aliases.rlog = ["log", "--reversed"]"#);
     // repo config alias
     work_dir
         .run_jj(["config", "set", "--repo", "aliases.b2", "['bookmark']"])
@@ -354,6 +355,30 @@ fn test_aliases_are_resolved(shell: Shell) {
                     aaa	(no description set)
                     [EOF]
                     ");
+        }
+        _ => unimplemented!("unexpected shell '{shell}'"),
+    }
+
+    let output = work_dir.complete_at(shell, 2, ["rlog", "--rev"]);
+    match shell {
+        Shell::Bash => {
+            insta::assert_snapshot!(output, @r"
+            --revisions
+            --reversed[EOF]
+            ");
+        }
+        Shell::Zsh => {
+            insta::assert_snapshot!(output, @r"
+            --revisions:Which revisions to show
+            --reversed:Show revisions in the opposite order (older revisions first)[EOF]
+            ");
+        }
+        Shell::Fish => {
+            insta::assert_snapshot!(output, @r"
+            --revisions	Which revisions to show
+            --reversed	Show revisions in the opposite order (older revisions first)
+            [EOF]
+            ");
         }
         _ => unimplemented!("unexpected shell '{shell}'"),
     }
