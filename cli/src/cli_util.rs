@@ -3656,11 +3656,14 @@ pub struct CliRunner {
     commit_template_extensions: Vec<Arc<dyn CommitTemplateLanguageExtension>>,
     operation_template_extensions: Vec<Arc<dyn OperationTemplateLanguageExtension>>,
     dispatch_fn: CliDispatchFn,
-    start_hook_fns: Vec<CliDispatchFn>,
+    dispatch_hook_fn: Vec<CliDispatchHookFn>,
     process_global_args_fns: Vec<ProcessGlobalArgsFn>,
 }
 
-type CliDispatchFn = Box<dyn FnOnce(&mut Ui, &CommandHelper) -> Result<(), CommandError>>;
+pub type CliDispatchFn = Box<dyn FnOnce(&mut Ui, &CommandHelper) -> Result<(), CommandError>>;
+
+type CliDispatchHookFn =
+    Box<dyn FnOnce(&mut Ui, &CommandHelper, CliDispatchFn) -> Result<(), CommandError>>;
 
 type ProcessGlobalArgsFn = Box<dyn FnOnce(&mut Ui, &ArgMatches) -> Result<(), CommandError>>;
 
@@ -3682,7 +3685,7 @@ impl CliRunner {
             commit_template_extensions: vec![],
             operation_template_extensions: vec![],
             dispatch_fn: Box::new(crate::commands::run_command),
-            start_hook_fns: vec![],
+            dispatch_hook_fn: vec![],
             process_global_args_fns: vec![],
         }
     }
@@ -3779,8 +3782,14 @@ impl CliRunner {
         self
     }
 
-    pub fn add_start_hook(mut self, start_hook_fn: CliDispatchFn) -> Self {
-        self.start_hook_fns.push(start_hook_fn);
+    /// Add a hook that gets called when it's time to run the command. It is
+    /// the hook's responsibility to call the given inner dispatch function to
+    /// run the command.
+    pub fn add_dispatch_hook<F>(mut self, dispatch_hook_fn: F) -> Self
+    where
+        F: FnOnce(&mut Ui, &CommandHelper, CliDispatchFn) -> Result<(), CommandError> + 'static,
+    {
+        self.dispatch_hook_fn.push(Box::new(dispatch_hook_fn));
         self
     }
 
@@ -3820,7 +3829,7 @@ impl CliRunner {
     }
 
     #[instrument(skip_all)]
-    fn run_internal(self, ui: &mut Ui, mut raw_config: RawConfig) -> Result<(), CommandError> {
+    fn run_internal(mut self, ui: &mut Ui, mut raw_config: RawConfig) -> Result<(), CommandError> {
         // `cwd` is canonicalized for consistency with `Workspace::workspace_root()` and
         // to easily compute relative paths between them.
         let cwd = env::current_dir()
@@ -3940,8 +3949,12 @@ impl CliRunner {
         let command_helper = CommandHelper {
             data: Rc::new(command_helper_data),
         };
-        for start_hook_fn in self.start_hook_fns {
-            start_hook_fn(ui, &command_helper)?;
+        for dispatch_hook_fn in self.dispatch_hook_fn {
+            let old_dispatch_fn = self.dispatch_fn;
+            let new_dispatch_fn = move |ui: &mut Ui, command_helper: &CommandHelper| {
+                dispatch_hook_fn(ui, command_helper, old_dispatch_fn)
+            };
+            self.dispatch_fn = Box::new(new_dispatch_fn);
         }
         (self.dispatch_fn)(ui, &command_helper)
     }
